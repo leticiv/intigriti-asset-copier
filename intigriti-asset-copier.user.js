@@ -1,13 +1,15 @@
 // ==UserScript==
 // @name         Intigriti — Asset Copier
 // @namespace    https://github.com/you/intigriti-asset-copier
-// @version      1.0.0
+// @version      1.1.0
 // @description  Extrai todos os assets de um programa Intigriti e copia para o clipboard com um clique
 // @author       você
 // @match        https://app.intigriti.com/programs/*
 // @match        https://app.intigriti.com/researcher/programs/*
 // @grant        GM_setClipboard
 // @grant        GM_addStyle
+// @grant        GM_getValue
+// @grant        GM_setValue
 // @run-at       document-idle
 // ==/UserScript==
 
@@ -146,9 +148,36 @@
     #iac-modal-actions {
       display: flex;
       gap: 10px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    #iac-format-label {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: #a6adc8;
+      font-family: 'Segoe UI', sans-serif;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    #iac-format-select {
+      min-width: 118px;
+      padding: 8px 10px;
+      background: #181825;
+      color: #cdd6f4;
+      border: 1px solid #45475a;
+      border-radius: 8px;
+      font-family: 'Segoe UI', sans-serif;
+      font-size: 12px;
+      outline: none;
+      cursor: pointer;
+    }
+    #iac-format-select:focus {
+      border-color: #6b46ff;
+      box-shadow: 0 0 0 2px rgba(107,70,255,0.25);
     }
     .iac-action-btn {
-      flex: 1;
+      flex: 1 1 130px;
       padding: 9px 0;
       border: none;
       border-radius: 8px;
@@ -164,6 +193,29 @@
   `);
 
   // ─── Helpers ──────────────────────────────────────────────────────────────
+  const FORMAT_STORAGE_KEY = 'iac-output-format';
+  const OUTPUT_FORMATS = new Set(['plain', 'json', 'csv']);
+  const DEFAULT_OUTPUT_FORMAT = 'plain';
+
+  function normalizeFormat(format) {
+    return OUTPUT_FORMATS.has(format) ? format : DEFAULT_OUTPUT_FORMAT;
+  }
+
+  function getSavedFormat() {
+    try {
+      return normalizeFormat(GM_getValue(FORMAT_STORAGE_KEY, DEFAULT_OUTPUT_FORMAT));
+    } catch (_) {
+      return DEFAULT_OUTPUT_FORMAT;
+    }
+  }
+
+  function setSavedFormat(format) {
+    try {
+      GM_setValue(FORMAT_STORAGE_KEY, normalizeFormat(format));
+    } catch (_) {
+      // Ignore storage failures so copying still works in restricted managers.
+    }
+  }
 
   /** Aguarda o DOM do Angular carregar os assets (até 10s) */
   function waitForAssets(timeout = 10000) {
@@ -227,8 +279,20 @@
     return { inScope, outOfScope };
   }
 
-  /** Formata a lista de assets como texto simples (um por linha) */
-  function formatAssets({ inScope, outOfScope }) {
+  function mapAssetForJsonExport(asset) {
+    return {
+      name: asset.name,
+      type: asset.type,
+      tier: asset.tier,
+    };
+  }
+
+  function csvEscape(value) {
+    const str = String(value ?? '');
+    return /[",\n\r]/.test(str) ? `"${str.replace(/"/g, '""')}"` : str;
+  }
+
+  function formatPlainAssets({ inScope, outOfScope }) {
     const lines = [];
 
     if (inScope.length) {
@@ -243,6 +307,57 @@
     }
 
     return lines.join('\n');
+  }
+
+  function formatJsonAssets({ inScope, outOfScope }) {
+    return JSON.stringify({
+      inScope: inScope.map(mapAssetForJsonExport),
+      outOfScope: outOfScope.map(mapAssetForJsonExport),
+    }, null, 2);
+  }
+
+  function formatCsvAssets({ inScope, outOfScope }) {
+    const rows = [
+      ['name', 'type', 'tier', 'scope'],
+      ...inScope.map(a => [a.name, a.type, a.tier, 'in-scope']),
+      ...outOfScope.map(a => [a.name, a.type, a.tier, 'out-of-scope']),
+    ];
+
+    return rows.map(row => row.map(csvEscape).join(',')).join('\n');
+  }
+
+  /** Formata a lista de assets no formato escolhido pelo usuário */
+  function formatAssets(assets, format = DEFAULT_OUTPUT_FORMAT) {
+    switch (normalizeFormat(format)) {
+      case 'json':
+        return formatJsonAssets(assets);
+      case 'csv':
+        return formatCsvAssets(assets);
+      case 'plain':
+      default:
+        return formatPlainAssets(assets);
+    }
+  }
+
+  function escapeHtml(text) {
+    return text.replace(/[&<>"']/g, char => ({
+      '&': '&amp;',
+      '<': '&lt;',
+      '>': '&gt;',
+      '"': '&quot;',
+      "'": '&#39;',
+    }[char]));
+  }
+
+  function renderModalText(text, format) {
+    const escaped = escapeHtml(text);
+
+    if (normalizeFormat(format) !== 'plain') {
+      return escaped;
+    }
+
+    return escaped.replace(/## IN SCOPE ##/g, '<span class="iac-section-header">## IN SCOPE ##</span>')
+                  .replace(/## OUT OF SCOPE ##/g, '<span class="iac-oos-header">## OUT OF SCOPE ##</span>');
   }
 
   // ─── Toast ────────────────────────────────────────────────────────────────
@@ -260,10 +375,12 @@
   }
 
   // ─── Modal ────────────────────────────────────────────────────────────────
-  function showModal(text, stats) {
+  function showModal(assets, stats) {
     // remove modal anterior se existir
     const existing = document.getElementById('iac-modal-overlay');
     if (existing) existing.remove();
+
+    let selectedFormat = getSavedFormat();
 
     const overlay = document.createElement('div');
     overlay.id = 'iac-modal-overlay';
@@ -288,16 +405,20 @@
     pre.setAttribute('tabindex', '0');
     pre.contentEditable = 'false';
 
-    // Renderiza com cores por seção
-    const rendered = text.replace(/## IN SCOPE ##/g, '<span class="iac-section-header">## IN SCOPE ##</span>')
-                         .replace(/## OUT OF SCOPE ##/g, '<span class="iac-oos-header">## OUT OF SCOPE ##</span>');
-    pre.innerHTML = rendered.split('\n').join('\n');
     pre.style.whiteSpace = 'pre';
 
     // actions
     const actions = document.createElement('div');
     actions.id = 'iac-modal-actions';
     actions.innerHTML = `
+      <label id="iac-format-label" for="iac-format-select">
+        Format
+        <select id="iac-format-select">
+          <option value="plain">Plain text</option>
+          <option value="json">JSON</option>
+          <option value="csv">CSV</option>
+        </select>
+      </label>
       <button class="iac-action-btn" id="iac-copy-btn">⎘ Copiar tudo</button>
       <button class="iac-action-btn" id="iac-close-btn">Fechar</button>
     `;
@@ -310,6 +431,15 @@
 
     // eventos
     const closeModal = () => overlay.remove();
+    const formatSelect = document.getElementById('iac-format-select');
+    const copyButton = document.getElementById('iac-copy-btn');
+    const updatePreview = () => {
+      const text = formatAssets(assets, selectedFormat);
+      pre.innerHTML = renderModalText(text, selectedFormat);
+    };
+
+    formatSelect.value = selectedFormat;
+    updatePreview();
 
     document.getElementById('iac-modal-close').addEventListener('click', closeModal);
     document.getElementById('iac-close-btn').addEventListener('click', closeModal);
@@ -318,10 +448,17 @@
       if (e.key === 'Escape') { closeModal(); document.removeEventListener('keydown', esc); }
     });
 
-    document.getElementById('iac-copy-btn').addEventListener('click', () => {
+    formatSelect.addEventListener('change', () => {
+      selectedFormat = normalizeFormat(formatSelect.value);
+      setSavedFormat(selectedFormat);
+      updatePreview();
+    });
+
+    copyButton.addEventListener('click', () => {
+      const text = formatAssets(assets, selectedFormat);
       GM_setClipboard(text);
-      showToast(`✅ Copiado!\n${stats.inScope} in-scope + ${stats.outOfScope} OOS`);
-      document.getElementById('iac-copy-btn').textContent = '✓ Copiado!';
+      showToast(`✅ Copiado (${selectedFormat})!\n${stats.inScope} in-scope + ${stats.outOfScope} OOS`);
+      copyButton.textContent = '✓ Copiado!';
       setTimeout(() => {
         const btn = document.getElementById('iac-copy-btn');
         if (btn) btn.textContent = '⎘ Copiar tudo';
@@ -356,8 +493,7 @@
           return;
         }
 
-        const text = formatAssets({ inScope, outOfScope });
-        showModal(text, { inScope: inScope.length, outOfScope: outOfScope.length });
+        showModal({ inScope, outOfScope }, { inScope: inScope.length, outOfScope: outOfScope.length });
 
       } catch (err) {
         showToast(`❌ Erro: ${err.message}`);

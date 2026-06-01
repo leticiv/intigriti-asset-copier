@@ -4,6 +4,12 @@ Tampermonkey userscript that extracts all assets from an Intigriti program page 
 
 ## How it works
 
+
+
+https://github.com/user-attachments/assets/c3a76b02-13b6-406d-86c6-53c6c9f7902c
+
+
+
 Intigriti's program pages are rendered by an Angular SPA. The script:
 
 1. Injects a floating **"Copy Assets"** button into the page after Angular finishes rendering

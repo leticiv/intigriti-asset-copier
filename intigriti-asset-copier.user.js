@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         Intigriti — Asset Copier
-// @namespace    https://github.com/you/intigriti-asset-copier
-// @version      1.1.0
+// @namespace    https://github.com/leticiv/intigriti-asset-copier
+// @version      2.0.0
 // @description  Extrai todos os assets de um programa Intigriti e copia para o clipboard com um clique
-// @author       você
+// @author       leticiv
 // @match        https://app.intigriti.com/programs/*
 // @match        https://app.intigriti.com/researcher/programs/*
 // @grant        GM_setClipboard
@@ -16,180 +16,273 @@
 (function () {
   'use strict';
 
-  // ─── Estilos do painel ────────────────────────────────────────────────────
   GM_addStyle(`
+    @import url('https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;600&family=Geist:wght@400;500;600&display=swap');
+
+    /* ── tokens ─────────────────────────────────────────────────────────── */
+    #iac-root {
+      --bg:        #0a0a0a;
+      --surface:   #111111;
+      --elevated:  #181818;
+      --border:    #1e1e1e;
+      --border-hi: #2e2e2e;
+      --text:      #e8e8e8;
+      --muted:     #555;
+      --accent:    #eb6f92;
+      --accent-lo: rgba(235,111,146,.12);
+      --green:     #3ddc84;
+      --red:       #ff5f57;
+      --mono:      'Geist Mono', monospace;
+      --sans:      'Geist', sans-serif;
+      --radius:    14px;
+      --radius-sm: 8px;
+    }
+
+    /* ── botão principal ──────────────────────────────────────────────────
+       posicionado no canto inferior ESQUERDO para não colidir com o
+       chat widget da Intigriti (que fica no canto inferior direito)       */
     #iac-btn {
       position: fixed;
       bottom: 24px;
-      right: 24px;
+      left: 24px;
       z-index: 99999;
       display: flex;
       align-items: center;
       gap: 8px;
-      padding: 10px 18px;
-      background: #6b46ff;
-      color: #fff;
-      font-family: 'Segoe UI', sans-serif;
-      font-size: 13px;
-      font-weight: 600;
-      border: none;
-      border-radius: 10px;
+      padding: 9px 16px;
+      background: var(--surface);
+      color: var(--text);
+      font-family: var(--mono);
+      font-size: .75rem;
+      font-weight: 500;
+      letter-spacing: .06em;
+      border: 1px solid var(--border-hi);
+      border-radius: var(--radius-sm);
       cursor: pointer;
-      box-shadow: 0 4px 20px rgba(107,70,255,0.45);
-      transition: transform 0.15s, box-shadow 0.15s, background 0.15s;
+      transition: background .15s, border-color .15s, color .15s;
       user-select: none;
+      -webkit-font-smoothing: antialiased;
     }
     #iac-btn:hover {
-      background: #5533ee;
-      transform: translateY(-2px);
-      box-shadow: 0 6px 24px rgba(107,70,255,0.55);
+      background: var(--elevated);
+      border-color: var(--accent);
+      color: var(--accent);
     }
-    #iac-btn:active { transform: scale(0.97); }
+    #iac-btn:active { opacity: .8; }
     #iac-btn svg { flex-shrink: 0; }
+    #iac-btn .iac-dot {
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: var(--accent);
+      box-shadow: 0 0 8px var(--accent);
+      animation: iac-pulse 2.4s ease-in-out infinite;
+      flex-shrink: 0;
+    }
+    @keyframes iac-pulse {
+      0%,100% { opacity: 1; transform: scale(1); }
+      50%      { opacity: .4; transform: scale(.65); }
+    }
 
+    /* ── toast ───────────────────────────────────────────────────────────── */
     #iac-toast {
       position: fixed;
-      bottom: 80px;
-      right: 24px;
-      z-index: 99999;
-      padding: 10px 16px;
-      background: #1e1e2e;
-      color: #cdd6f4;
-      font-family: 'Segoe UI', sans-serif;
-      font-size: 12px;
-      border-radius: 8px;
-      border-left: 3px solid #6b46ff;
+      bottom: 28px;
+      left: 50%;
+      transform: translateX(-50%) translateY(80px);
+      z-index: 999999;
+      padding: 10px 18px;
+      background: #1c1c1c;
+      color: var(--text);
+      font-family: var(--mono);
+      font-size: .78rem;
+      letter-spacing: .03em;
+      border: 1px solid var(--border-hi);
+      border-radius: 10px;
+      box-shadow: 0 8px 32px rgba(0,0,0,.5);
       opacity: 0;
-      transform: translateY(6px);
-      transition: opacity 0.25s, transform 0.25s;
       pointer-events: none;
       white-space: pre-line;
-      max-width: 280px;
+      transition: opacity .2s ease-out, transform .25s cubic-bezier(.34,1.56,.64,1);
+      -webkit-font-smoothing: antialiased;
     }
     #iac-toast.show {
       opacity: 1;
-      transform: translateY(0);
+      transform: translateX(-50%) translateY(0);
     }
+    #iac-toast.ok-toast  { border-color: var(--green); color: var(--green); }
+    #iac-toast.err-toast { border-color: var(--red);   color: var(--red);   }
 
+    /* ── overlay ─────────────────────────────────────────────────────────── */
     #iac-modal-overlay {
       position: fixed;
       inset: 0;
       z-index: 999998;
-      background: rgba(0,0,0,0.55);
-      backdrop-filter: blur(3px);
+      background: rgba(0,0,0,.65);
+      backdrop-filter: blur(4px);
       display: flex;
       align-items: center;
       justify-content: center;
+      -webkit-font-smoothing: antialiased;
     }
+
+    /* ── modal ───────────────────────────────────────────────────────────── */
     #iac-modal {
-      background: #1e1e2e;
-      color: #cdd6f4;
-      font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
-      font-size: 12px;
-      border-radius: 14px;
-      padding: 24px;
-      width: min(640px, 90vw);
+      background: var(--surface);
+      border: 1px solid var(--border-hi);
+      border-radius: var(--radius);
+      width: min(620px, 92vw);
       max-height: 80vh;
       display: flex;
       flex-direction: column;
-      gap: 16px;
-      box-shadow: 0 24px 80px rgba(0,0,0,0.6);
+      gap: 0;
+      animation: iac-slideUp .2s ease;
+      overflow: hidden;
     }
+    @keyframes iac-slideUp {
+      from { opacity: 0; transform: translateY(10px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    /* header do modal */
     #iac-modal-header {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      font-family: 'Segoe UI', sans-serif;
+      padding: 18px 20px 16px;
+      border-bottom: 1px solid var(--border);
+      gap: 12px;
     }
-    #iac-modal-title {
-      font-size: 15px;
-      font-weight: 700;
-      color: #cba6f7;
+    #iac-modal-wordmark {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-family: var(--mono);
+      font-size: .7rem;
+      font-weight: 500;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    #iac-modal-wordmark .iac-dot {
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: var(--accent);
+      box-shadow: 0 0 8px var(--accent);
+      flex-shrink: 0;
     }
     #iac-modal-meta {
-      font-size: 11px;
-      color: #6c7086;
-      font-family: 'Segoe UI', sans-serif;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-left: auto;
     }
+    .iac-badge {
+      font-family: var(--mono);
+      font-size: .68rem;
+      letter-spacing: .06em;
+      padding: 3px 8px;
+      border-radius: 4px;
+      font-weight: 500;
+    }
+    .iac-badge-in  { background: rgba(61,220,132,.1);  color: var(--green); }
+    .iac-badge-oos { background: rgba(255,95,87,.1);   color: var(--red);   }
     #iac-modal-close {
       background: none;
-      border: none;
-      color: #6c7086;
-      font-size: 20px;
-      cursor: pointer;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      font-size: 14px;
       line-height: 1;
-      padding: 2px 6px;
-      border-radius: 6px;
-      transition: color 0.15s, background 0.15s;
+      cursor: pointer;
+      padding: 4px 8px;
+      border-radius: var(--radius-sm);
+      transition: color .15s, border-color .15s, background .15s;
+      font-family: var(--mono);
     }
-    #iac-modal-close:hover { color: #cdd6f4; background: #313244; }
-    #iac-modal-textarea {
+    #iac-modal-close:hover {
+      color: var(--text);
+      border-color: var(--border-hi);
+      background: var(--elevated);
+    }
+
+    /* conteúdo */
+    #iac-modal-pre {
       flex: 1;
       overflow-y: auto;
-      background: #181825;
-      border: 1px solid #313244;
-      border-radius: 8px;
-      padding: 14px;
+      background: var(--bg);
+      border-top: none;
+      border-bottom: 1px solid var(--border);
+      padding: 16px 20px;
       white-space: pre;
-      line-height: 1.7;
-      color: #cdd6f4;
-      font-size: 12px;
+      line-height: 1.75;
+      color: var(--text);
+      font-family: var(--mono);
+      font-size: .8rem;
+      letter-spacing: .03em;
       outline: none;
-      resize: none;
     }
-    .iac-section-header {
-      color: #a6e3a1;
-      font-weight: bold;
-    }
-    .iac-oos-header {
-      color: #f38ba8;
-      font-weight: bold;
-    }
-    #iac-modal-actions {
+    #iac-modal-pre::-webkit-scrollbar { width: 4px; }
+    #iac-modal-pre::-webkit-scrollbar-track { background: transparent; }
+    #iac-modal-pre::-webkit-scrollbar-thumb { background: var(--border-hi); border-radius: 4px; }
+
+    .iac-section-in  { color: var(--green); font-weight: 600; }
+    .iac-section-oos { color: var(--red);   font-weight: 600; }
+
+    /* rodapé do modal */
+    #iac-modal-footer {
       display: flex;
-      gap: 10px;
       align-items: center;
+      gap: 10px;
+      padding: 14px 20px;
       flex-wrap: wrap;
     }
     #iac-format-label {
       display: flex;
       align-items: center;
       gap: 8px;
-      color: #a6adc8;
-      font-family: 'Segoe UI', sans-serif;
-      font-size: 12px;
-      font-weight: 600;
+      font-family: var(--mono);
+      font-size: .7rem;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      color: var(--muted);
     }
     #iac-format-select {
-      min-width: 118px;
-      padding: 8px 10px;
-      background: #181825;
-      color: #cdd6f4;
-      border: 1px solid #45475a;
-      border-radius: 8px;
-      font-family: 'Segoe UI', sans-serif;
-      font-size: 12px;
+      padding: 6px 10px;
+      background: var(--bg);
+      color: var(--text);
+      border: 1px solid var(--border-hi);
+      border-radius: var(--radius-sm);
+      font-family: var(--mono);
+      font-size: .75rem;
       outline: none;
       cursor: pointer;
+      transition: border-color .15s;
     }
-    #iac-format-select:focus {
-      border-color: #6b46ff;
-      box-shadow: 0 0 0 2px rgba(107,70,255,0.25);
-    }
+    #iac-format-select:focus { border-color: var(--accent); }
+
     .iac-action-btn {
-      flex: 1 1 130px;
-      padding: 9px 0;
-      border: none;
-      border-radius: 8px;
-      font-family: 'Segoe UI', sans-serif;
-      font-size: 13px;
-      font-weight: 600;
+      flex: 1 1 120px;
+      padding: 8px 0;
+      border-radius: var(--radius-sm);
+      font-family: var(--mono);
+      font-size: .75rem;
+      font-weight: 500;
+      letter-spacing: .06em;
       cursor: pointer;
-      transition: filter 0.15s;
+      transition: background .15s, border-color .15s, color .15s, opacity .15s;
+      border: 1px solid transparent;
     }
-    .iac-action-btn:hover { filter: brightness(1.1); }
-    #iac-copy-btn  { background: #6b46ff; color: #fff; }
-    #iac-close-btn { background: #313244; color: #cdd6f4; }
+    #iac-copy-btn {
+      background: var(--accent);
+      color: #0a0a0a;
+      border-color: var(--accent);
+    }
+    #iac-copy-btn:hover { opacity: .88; }
+    #iac-close-btn {
+      background: var(--elevated);
+      color: var(--muted);
+      border-color: var(--border-hi);
+    }
+    #iac-close-btn:hover { color: var(--text); border-color: var(--border-hi); }
   `);
 
   // ─── Helpers ──────────────────────────────────────────────────────────────
@@ -202,89 +295,58 @@
   }
 
   function getSavedFormat() {
-    try {
-      return normalizeFormat(GM_getValue(FORMAT_STORAGE_KEY, DEFAULT_OUTPUT_FORMAT));
-    } catch (_) {
-      return DEFAULT_OUTPUT_FORMAT;
-    }
+    try { return normalizeFormat(GM_getValue(FORMAT_STORAGE_KEY, DEFAULT_OUTPUT_FORMAT)); }
+    catch (_) { return DEFAULT_OUTPUT_FORMAT; }
   }
 
   function setSavedFormat(format) {
-    try {
-      GM_setValue(FORMAT_STORAGE_KEY, normalizeFormat(format));
-    } catch (_) {
-      // Ignore storage failures so copying still works in restricted managers.
-    }
+    try { GM_setValue(FORMAT_STORAGE_KEY, normalizeFormat(format)); }
+    catch (_) { /* ignore */ }
   }
 
-  /** Aguarda o DOM do Angular carregar os assets (até 10s) */
   function waitForAssets(timeout = 10000) {
     return new Promise((resolve, reject) => {
       const start = Date.now();
       const check = () => {
         const nodes = document.querySelectorAll('lib-asset-detail');
         if (nodes.length > 0) return resolve(nodes);
-        if (Date.now() - start > timeout) return reject(new Error('Assets não encontrados'));
+        if (Date.now() - start > timeout) return reject(new Error('assets não encontrados'));
         setTimeout(check, 400);
       };
       check();
     });
   }
 
-  /** Extrai texto do asset-name de um lib-asset-detail */
   function extractAssetName(node) {
     const span = node.querySelector('.asset-name span, .asset-name a');
     return span ? span.textContent.trim() : null;
   }
 
-  /** Verifica se o asset é OOS */
   function isOOS(node) {
     const tier = node.querySelector('.tier .copy');
     return tier && tier.textContent.trim().toLowerCase().includes('out of scope');
   }
 
-  /** Obtém o tier label (ex: "Tier 2") */
   function getTier(node) {
     const tier = node.querySelector('.tier .copy');
     return tier ? tier.textContent.trim() : '';
   }
 
-  /** Obtém o tipo (Wildcard, URL, etc.) */
   function getType(node) {
     const type = node.querySelector('.type .copy');
     return type ? type.textContent.trim() : '';
   }
 
-  /** Coleta todos os assets e separa em in-scope e OOS */
   async function collectAssets() {
     const nodes = await waitForAssets();
-    const inScope = [];
-    const outOfScope = [];
-
+    const inScope = [], outOfScope = [];
     nodes.forEach(node => {
       const name = extractAssetName(node);
       if (!name) return;
-
-      const tier = getTier(node);
-      const type = getType(node);
-      const entry = { name, tier, type };
-
-      if (isOOS(node)) {
-        outOfScope.push(entry);
-      } else {
-        inScope.push(entry);
-      }
+      const entry = { name, tier: getTier(node), type: getType(node) };
+      (isOOS(node) ? outOfScope : inScope).push(entry);
     });
-
     return { inScope, outOfScope };
-  }
-
-  function mapAssetForJsonExport(asset) {
-    return {
-      name: asset.name,
-      type: asset.type,
-      tier: asset.tier,
-    };
   }
 
   function csvEscape(value) {
@@ -294,25 +356,15 @@
 
   function formatPlainAssets({ inScope, outOfScope }) {
     const lines = [];
-
-    if (inScope.length) {
-      lines.push('## IN SCOPE ##');
-      inScope.forEach(a => lines.push(a.name));
-    }
-
-    if (outOfScope.length) {
-      lines.push('');
-      lines.push('## OUT OF SCOPE ##');
-      outOfScope.forEach(a => lines.push(a.name));
-    }
-
+    if (inScope.length)     { lines.push('## IN SCOPE ##');     inScope.forEach(a => lines.push(a.name)); }
+    if (outOfScope.length)  { lines.push(''); lines.push('## OUT OF SCOPE ##'); outOfScope.forEach(a => lines.push(a.name)); }
     return lines.join('\n');
   }
 
   function formatJsonAssets({ inScope, outOfScope }) {
     return JSON.stringify({
-      inScope: inScope.map(mapAssetForJsonExport),
-      outOfScope: outOfScope.map(mapAssetForJsonExport),
+      inScope:    inScope.map(({ name, type, tier }) => ({ name, type, tier })),
+      outOfScope: outOfScope.map(({ name, type, tier }) => ({ name, type, tier })),
     }, null, 2);
   }
 
@@ -322,46 +374,31 @@
       ...inScope.map(a => [a.name, a.type, a.tier, 'in-scope']),
       ...outOfScope.map(a => [a.name, a.type, a.tier, 'out-of-scope']),
     ];
-
     return rows.map(row => row.map(csvEscape).join(',')).join('\n');
   }
 
-  /** Formata a lista de assets no formato escolhido pelo usuário */
   function formatAssets(assets, format = DEFAULT_OUTPUT_FORMAT) {
     switch (normalizeFormat(format)) {
-      case 'json':
-        return formatJsonAssets(assets);
-      case 'csv':
-        return formatCsvAssets(assets);
-      case 'plain':
-      default:
-        return formatPlainAssets(assets);
+      case 'json': return formatJsonAssets(assets);
+      case 'csv':  return formatCsvAssets(assets);
+      default:     return formatPlainAssets(assets);
     }
   }
 
   function escapeHtml(text) {
-    return text.replace(/[&<>"']/g, char => ({
-      '&': '&amp;',
-      '<': '&lt;',
-      '>': '&gt;',
-      '"': '&quot;',
-      "'": '&#39;',
-    }[char]));
+    return text.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   }
 
   function renderModalText(text, format) {
     const escaped = escapeHtml(text);
-
-    if (normalizeFormat(format) !== 'plain') {
-      return escaped;
-    }
-
-    return escaped.replace(/## IN SCOPE ##/g, '<span class="iac-section-header">## IN SCOPE ##</span>')
-                  .replace(/## OUT OF SCOPE ##/g, '<span class="iac-oos-header">## OUT OF SCOPE ##</span>');
+    if (normalizeFormat(format) !== 'plain') return escaped;
+    return escaped
+      .replace(/## IN SCOPE ##/g,     '<span class="iac-section-in">## in scope ##</span>')
+      .replace(/## OUT OF SCOPE ##/g, '<span class="iac-section-oos">## out of scope ##</span>');
   }
 
   // ─── Toast ────────────────────────────────────────────────────────────────
-  function showToast(msg, duration = 3000) {
+  function showToast(msg, type = '') {
     let el = document.getElementById('iac-toast');
     if (!el) {
       el = document.createElement('div');
@@ -369,14 +406,14 @@
       document.body.appendChild(el);
     }
     el.textContent = msg;
-    el.classList.add('show');
+    el.className = type === 'ok' ? 'ok-toast' : type === 'err' ? 'err-toast' : '';
+    requestAnimationFrame(() => el.classList.add('show'));
     clearTimeout(el._t);
-    el._t = setTimeout(() => el.classList.remove('show'), duration);
+    el._t = setTimeout(() => el.classList.remove('show'), 2800);
   }
 
   // ─── Modal ────────────────────────────────────────────────────────────────
   function showModal(assets, stats) {
-    // remove modal anterior se existir
     const existing = document.getElementById('iac-modal-overlay');
     if (existing) existing.remove();
 
@@ -384,55 +421,46 @@
 
     const overlay = document.createElement('div');
     overlay.id = 'iac-modal-overlay';
-
-    const modal = document.createElement('div');
-    modal.id = 'iac-modal';
-
-    // header
-    const header = document.createElement('div');
-    header.id = 'iac-modal-header';
-    header.innerHTML = `
-      <div>
-        <div id="iac-modal-title">📋 Intigriti Asset Copier</div>
-        <div id="iac-modal-meta">${stats.inScope} in-scope · ${stats.outOfScope} out-of-scope</div>
+    // herdamos os tokens do root (sem body reset)
+    overlay.innerHTML = `
+      <div id="iac-root">
+        <div id="iac-modal">
+          <div id="iac-modal-header">
+            <div id="iac-modal-wordmark">
+              <div class="iac-dot"></div>
+              asset copier
+            </div>
+            <div id="iac-modal-meta">
+              <span class="iac-badge iac-badge-in">${stats.inScope} in-scope</span>
+              <span class="iac-badge iac-badge-oos">${stats.outOfScope} oos</span>
+            </div>
+            <button id="iac-modal-close" title="fechar (esc)">✕</button>
+          </div>
+          <div id="iac-modal-pre" tabindex="0"></div>
+          <div id="iac-modal-footer">
+            <label id="iac-format-label" for="iac-format-select">
+              format
+              <select id="iac-format-select">
+                <option value="plain">plain text</option>
+                <option value="json">json</option>
+                <option value="csv">csv</option>
+              </select>
+            </label>
+            <button class="iac-action-btn" id="iac-copy-btn">copy all</button>
+            <button class="iac-action-btn" id="iac-close-btn">close</button>
+          </div>
+        </div>
       </div>
-      <button id="iac-modal-close" title="Fechar">✕</button>
     `;
 
-    // textarea (read-only com conteúdo colorido simulado via div)
-    const pre = document.createElement('div');
-    pre.id = 'iac-modal-textarea';
-    pre.setAttribute('tabindex', '0');
-    pre.contentEditable = 'false';
-
-    pre.style.whiteSpace = 'pre';
-
-    // actions
-    const actions = document.createElement('div');
-    actions.id = 'iac-modal-actions';
-    actions.innerHTML = `
-      <label id="iac-format-label" for="iac-format-select">
-        Format
-        <select id="iac-format-select">
-          <option value="plain">Plain text</option>
-          <option value="json">JSON</option>
-          <option value="csv">CSV</option>
-        </select>
-      </label>
-      <button class="iac-action-btn" id="iac-copy-btn">⎘ Copiar tudo</button>
-      <button class="iac-action-btn" id="iac-close-btn">Fechar</button>
-    `;
-
-    modal.appendChild(header);
-    modal.appendChild(pre);
-    modal.appendChild(actions);
-    overlay.appendChild(modal);
     document.body.appendChild(overlay);
 
-    // eventos
-    const closeModal = () => overlay.remove();
+    const pre          = document.getElementById('iac-modal-pre');
     const formatSelect = document.getElementById('iac-format-select');
-    const copyButton = document.getElementById('iac-copy-btn');
+    const copyButton   = document.getElementById('iac-copy-btn');
+
+    const closeModal = () => overlay.remove();
+
     const updatePreview = () => {
       const text = formatAssets(assets, selectedFormat);
       pre.innerHTML = renderModalText(text, selectedFormat);
@@ -444,9 +472,11 @@
     document.getElementById('iac-modal-close').addEventListener('click', closeModal);
     document.getElementById('iac-close-btn').addEventListener('click', closeModal);
     overlay.addEventListener('click', e => { if (e.target === overlay) closeModal(); });
-    document.addEventListener('keydown', function esc(e) {
-      if (e.key === 'Escape') { closeModal(); document.removeEventListener('keydown', esc); }
-    });
+
+    const escHandler = e => {
+      if (e.key === 'Escape') { closeModal(); document.removeEventListener('keydown', escHandler); }
+    };
+    document.addEventListener('keydown', escHandler);
 
     formatSelect.addEventListener('change', () => {
       selectedFormat = normalizeFormat(formatSelect.value);
@@ -457,11 +487,11 @@
     copyButton.addEventListener('click', () => {
       const text = formatAssets(assets, selectedFormat);
       GM_setClipboard(text);
-      showToast(`✅ Copiado (${selectedFormat})!\n${stats.inScope} in-scope + ${stats.outOfScope} OOS`);
-      copyButton.textContent = '✓ Copiado!';
+      showToast(`copiado — ${stats.inScope} in-scope · ${stats.outOfScope} oos`, 'ok');
+      copyButton.textContent = '✓ copiado';
       setTimeout(() => {
         const btn = document.getElementById('iac-copy-btn');
-        if (btn) btn.textContent = '⎘ Copiar tudo';
+        if (btn) btn.textContent = 'copy all';
       }, 2000);
     });
   }
@@ -470,63 +500,76 @@
   function injectButton() {
     if (document.getElementById('iac-btn')) return;
 
+    // wrapper de tokens para o botão também
+    const wrapper = document.createElement('div');
+    wrapper.id = 'iac-root';
+
     const btn = document.createElement('button');
     btn.id = 'iac-btn';
-    btn.title = 'Extrair todos os assets desta página';
+    btn.title = 'extrair todos os assets desta página';
     btn.innerHTML = `
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+      <div class="iac-dot"></div>
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <rect x="9" y="9" width="13" height="13" rx="2"/>
         <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
       </svg>
-      Copy Assets
+      copy assets
     `;
 
     btn.addEventListener('click', async () => {
-      btn.textContent = '⏳ Extraindo...';
-      btn.disabled = true;
+      btn.style.opacity = '.5';
+      btn.style.pointerEvents = 'none';
+
+      const origHTML = btn.innerHTML;
+
+      btn.innerHTML = `
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"
+          style="animation: iac-spin .6s linear infinite">
+          <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/>
+        </svg>
+        extraindo...
+      `;
 
       try {
         const { inScope, outOfScope } = await collectAssets();
 
-        if (inScope.length === 0 && outOfScope.length === 0) {
-          showToast('⚠️ Nenhum asset encontrado.\nA página carregou os assets?');
+        if (!inScope.length && !outOfScope.length) {
+          showToast('nenhum asset encontrado — a página carregou?', 'err');
           return;
         }
 
         showModal({ inScope, outOfScope }, { inScope: inScope.length, outOfScope: outOfScope.length });
 
       } catch (err) {
-        showToast(`❌ Erro: ${err.message}`);
+        showToast(`erro: ${err.message}`, 'err');
         console.error('[IAC]', err);
       } finally {
-        btn.disabled = false;
-        btn.innerHTML = `
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-            <rect x="9" y="9" width="13" height="13" rx="2"/>
-            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
-          </svg>
-          Copy Assets`;
+        btn.innerHTML = origHTML;
+        btn.style.opacity = '';
+        btn.style.pointerEvents = '';
       }
     });
 
-    document.body.appendChild(btn);
+    wrapper.appendChild(btn);
+    document.body.appendChild(wrapper);
   }
 
-  // ─── Inicialização ────────────────────────────────────────────────────────
-  // O Angular faz navegação SPA, então observamos mudanças de URL
+  // spin keyframe injetado separado para o estado de loading
+  GM_addStyle(`
+    @keyframes iac-spin { to { transform: rotate(360deg); } }
+  `);
+
+  // ─── Inicialização (SPA-aware) ─────────────────────────────────────────
   let lastUrl = location.href;
 
   const observer = new MutationObserver(() => {
     if (location.href !== lastUrl) {
       lastUrl = location.href;
-      // pequeno delay para o Angular renderizar a nova rota
       setTimeout(injectButton, 1200);
     }
   });
 
   observer.observe(document.body, { childList: true, subtree: true });
-
-  // injeção inicial
   setTimeout(injectButton, 1500);
 
 })();
